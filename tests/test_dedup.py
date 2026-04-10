@@ -128,7 +128,10 @@ def test_dedup_source_group_with_duplicate():
     col = MagicMock()
     col.get.return_value = {
         "ids": ["d1", "d2"],
-        "documents": ["long document content that is fairly long", "long document content that is fairly long"],
+        "documents": [
+            "long document content that is fairly long",
+            "long document content that is fairly long",
+        ],
         "metadatas": [{"wing": "a"}, {"wing": "a"}],
     }
     col.query.return_value = {
@@ -181,7 +184,10 @@ def test_dedup_source_group_query_failure_keeps():
     col = MagicMock()
     col.get.return_value = {
         "ids": ["d1", "d2"],
-        "documents": ["long document one content here enough", "long document two content here enough"],
+        "documents": [
+            "long document one content here enough",
+            "long document two content here enough",
+        ],
         "metadatas": [{"wing": "a"}, {"wing": "a"}],
     }
     col.query.side_effect = Exception("query failed")

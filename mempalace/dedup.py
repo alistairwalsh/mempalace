@@ -42,6 +42,7 @@ def _get_palace_path():
     """Resolve palace path from config."""
     try:
         from .config import MempalaceConfig
+
         return MempalaceConfig().palace_path
     except Exception:
         return os.path.join(os.path.expanduser("~"), ".mempalace", "palace")
@@ -143,9 +144,7 @@ def show_stats(palace_path=None):
     for src, ids in sorted_groups[:15]:
         print(f"    {len(ids):4d}  {src[:65]}")
 
-    estimated_dups = sum(
-        int(len(ids) * 0.4) for ids in groups.values() if len(ids) > 20
-    )
+    estimated_dups = sum(int(len(ids) * 0.4) for ids in groups.values() if len(ids) > 20)
     print(f"\n  Estimated duplicates (groups > 20): ~{estimated_dups:,}")
 
 
@@ -201,8 +200,7 @@ def dedup_palace(
     print(f"\n{'─' * 55}")
     print(f"  Done in {elapsed:.1f}s")
     print(
-        f"  Drawers: {total_kept + total_deleted:,} → {total_kept:,}  "
-        f"(-{total_deleted:,} removed)"
+        f"  Drawers: {total_kept + total_deleted:,} → {total_kept:,}  (-{total_deleted:,} removed)"
     )
     print(f"  Palace after: {col.count():,} drawers")
 

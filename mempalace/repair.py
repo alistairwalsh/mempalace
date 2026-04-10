@@ -42,6 +42,7 @@ def _get_palace_path():
     """Resolve palace path from config."""
     try:
         from .config import MempalaceConfig
+
         return MempalaceConfig().palace_path
     except Exception:
         default = os.path.join(os.path.expanduser("~"), ".mempalace", "palace")
@@ -244,9 +245,7 @@ def rebuild_index(palace_path=None):
     all_metas = []
     offset = 0
     while offset < total:
-        batch = col.get(
-            limit=batch_size, offset=offset, include=["documents", "metadatas"]
-        )
+        batch = col.get(limit=batch_size, offset=offset, include=["documents", "metadatas"])
         if not batch["ids"]:
             break
         all_ids.extend(batch["ids"])
@@ -266,9 +265,7 @@ def rebuild_index(palace_path=None):
     # Rebuild with correct HNSW settings
     print("  Rebuilding collection with hnsw:space=cosine...")
     client.delete_collection(COLLECTION_NAME)
-    new_col = client.create_collection(
-        COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
-    )
+    new_col = client.create_collection(COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
 
     filed = 0
     for i in range(0, len(all_ids), batch_size):
