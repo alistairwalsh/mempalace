@@ -164,6 +164,140 @@ def test_chroma_detect_matches_palace_with_chroma_sqlite(tmp_path):
     assert ChromaBackend.detect(str(tmp_path.parent)) is False
 
 
+def test_query_rejects_missing_input():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+    with pytest.raises(ValueError):
+        collection.query()
+
+
+def test_query_rejects_both_texts_and_embeddings():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+    with pytest.raises(ValueError):
+        collection.query(query_texts=["q"], query_embeddings=[[0.1, 0.2]])
+
+
+def test_query_rejects_empty_input_list():
+    fake = _FakeCollection()
+    collection = ChromaCollection(fake)
+    with pytest.raises(ValueError):
+        collection.query(query_texts=[])
+
+
+def test_query_empty_preserves_embeddings_outer_shape_when_requested():
+    fake = _FakeCollection(
+        query_response={"ids": [], "documents": [], "metadatas": [], "distances": []}
+    )
+    collection = ChromaCollection(fake)
+
+    requested = collection.query(query_texts=["q1", "q2"], include=["documents", "embeddings"])
+    assert requested.embeddings == [[], []]
+
+    not_requested = collection.query(query_texts=["q1", "q2"], include=["documents"])
+    assert not_requested.embeddings is None
+
+
+def test_base_collection_update_default_validates_list_lengths(tmp_path):
+    backend = ChromaBackend()
+    palace_path = tmp_path / "palace"
+    collection = backend.get_collection(
+        palace=PalaceRef(id=str(palace_path), local_path=str(palace_path)),
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+
+    # Mismatched documents length → clear ValueError, not silent merge.
+    with pytest.raises(ValueError, match="documents length"):
+        collection._collection.add(
+            documents=["a", "b"],
+            ids=["1", "2"],
+            metadatas=[{"k": 1}, {"k": 2}],
+        )
+        from mempalace.backends.base import BaseCollection
+
+        BaseCollection.update(
+            collection,
+            ids=["1", "2"],
+            documents=["only-one"],
+        )
+
+
+def test_chroma_cache_invalidates_when_db_file_missing(tmp_path):
+    """A palace rebuild that removes chroma.sqlite3 must drop the stale cache."""
+    backend = ChromaBackend()
+    palace_path = tmp_path / "palace"
+    backend.get_collection(
+        palace=PalaceRef(id=str(palace_path), local_path=str(palace_path)),
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+    assert str(palace_path) in backend._clients
+    prior_client = backend._clients[str(palace_path)]
+    prior_freshness = backend._freshness[str(palace_path)]
+    assert prior_freshness != (0, 0.0)  # DB file exists after get_or_create_collection
+
+    # Remove chroma.sqlite3 to simulate a rebuild mid-flight. The stale cache
+    # must not be silently reused — the in-memory HNSW index would be wrong.
+    (palace_path / "chroma.sqlite3").unlink()
+
+    new_client = backend._client(str(palace_path))
+    # New client object (cache was replaced, not reused) and freshness was reset
+    # to (0, 0.0) to reflect "no DB on disk yet" state.
+    assert new_client is not prior_client
+    assert backend._freshness[str(palace_path)] == (0, 0.0)
+
+
+def test_chroma_cache_picks_up_db_created_after_first_open(tmp_path):
+    """The 0 → nonzero stat transition invalidates a cache built before the DB existed."""
+    backend = ChromaBackend()
+    palace_path = tmp_path / "palace"
+    palace_path.mkdir()
+
+    # Seed an entry in the caches as if a prior _client() call had opened the
+    # palace when chroma.sqlite3 did not exist yet. Freshness (0, 0.0) is the
+    # signal that the DB was absent at cache time.
+    sentinel = object()
+    backend._clients[str(palace_path)] = sentinel
+    backend._freshness[str(palace_path)] = (0, 0.0)
+
+    # The DB file now appears (real chromadb would have created it by now).
+    # Use a real chromadb call so _fix_blob_seq_ids and PersistentClient succeed.
+    import chromadb as _chromadb
+
+    _chromadb.PersistentClient(path=str(palace_path)).get_or_create_collection("seed")
+    assert (palace_path / "chroma.sqlite3").is_file()
+
+    # Next _client() call must detect the 0 → nonzero transition and rebuild.
+    refreshed = backend._client(str(palace_path))
+    assert refreshed is not sentinel
+    assert backend._freshness[str(palace_path)] != (0, 0.0)
+
+
+def test_base_collection_update_default_rejects_mismatched_lengths(tmp_path):
+    """The ABC default update() raises ValueError rather than silently misaligning."""
+    from mempalace.backends.base import BaseCollection
+
+    backend = ChromaBackend()
+    palace_path = tmp_path / "palace"
+    collection = backend.get_collection(
+        palace=PalaceRef(id=str(palace_path), local_path=str(palace_path)),
+        collection_name="mempalace_drawers",
+        create=True,
+    )
+    collection.add(
+        documents=["a", "b"],
+        ids=["1", "2"],
+        metadatas=[{"k": 1}, {"k": 2}],
+    )
+
+    with pytest.raises(ValueError, match="documents length"):
+        BaseCollection.update(collection, ids=["1", "2"], documents=["only-one"])
+
+    with pytest.raises(ValueError, match="metadatas length"):
+        BaseCollection.update(collection, ids=["1", "2"], metadatas=[{"k": 9}])
+
+
 def test_chroma_backend_accepts_palace_ref_kwarg(tmp_path):
     palace_path = tmp_path / "palace"
     backend = ChromaBackend()

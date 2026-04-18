@@ -156,6 +156,12 @@ class ChromaCollection(BaseCollection):
         _validate_where(where)
         _validate_where(where_document)
 
+        if (query_texts is None) == (query_embeddings is None):
+            raise ValueError("query requires exactly one of query_texts or query_embeddings")
+        chosen = query_texts if query_texts is not None else query_embeddings
+        if not chosen:
+            raise ValueError("query input must be a non-empty list")
+
         spec = _IncludeSpec.resolve(include, default_distances=True)
         chroma_include: list[str] = []
         if spec.documents:
@@ -190,7 +196,10 @@ class ChromaCollection(BaseCollection):
 
         ids = raw.get("ids") or []
         if not ids:
-            return QueryResult.empty(num_queries=num_queries)
+            return QueryResult.empty(
+                num_queries=num_queries,
+                embeddings_requested=spec.embeddings,
+            )
 
         documents = raw.get("documents") or [[] for _ in ids]
         metadatas = raw.get("metadatas") or [[] for _ in ids]
@@ -332,8 +341,18 @@ class ChromaBackend(BaseBackend):
         """Return a cached ``PersistentClient``, rebuilding on inode/mtime change.
 
         Handles the palace-rebuild case (repair/nuke/purge) by invalidating the
-        cache when ``chroma.sqlite3`` changes on disk. FAT/exFAT return inode 0,
-        so inode comparisons only fire when non-zero (matches #757 semantics).
+        cache when ``chroma.sqlite3`` changes on disk. Mirrors the semantics of
+        ``mcp_server._get_client`` (merged via #757):
+
+        * DB file missing while we hold a cached client → drop the cache so we
+          do not serve stale data after a rebuild that has not yet re-created
+          the DB.
+        * Transition 0 → nonzero stat (DB created after cache) counts as a
+          change, so the cached client is replaced with one that sees the DB.
+        * FAT/exFAT filesystems return inode 0; we never fire inode comparisons
+          when either side is 0 (safe fallback) but still honor mtime.
+        * Mtime change uses an epsilon (0.01 s) to tolerate FS timestamp
+          granularity without thrashing.
         """
         if self._closed:
             from .base import BackendClosedError  # late import avoids cycles at module load
@@ -344,16 +363,32 @@ class ChromaBackend(BaseBackend):
         cached_inode, cached_mtime = self._freshness.get(palace_path, (0, 0.0))
         current_inode, current_mtime = self._db_stat(palace_path)
 
+        db_path = os.path.join(palace_path, "chroma.sqlite3")
+        # DB was present when cache was built but is now missing → invalidate.
+        if cached is not None and not os.path.isfile(db_path):
+            self._clients.pop(palace_path, None)
+            self._freshness.pop(palace_path, None)
+            cached = None
+            cached_inode, cached_mtime = 0, 0.0
+
         inode_changed = current_inode != 0 and cached_inode != 0 and current_inode != cached_inode
+        # Transition from no-stat (0.0) to a real stat counts as a change so we
+        # pick up a DB that was created after the cache was built.
+        mtime_appeared = cached_mtime == 0.0 and current_mtime != 0.0
         mtime_changed = (
-            current_mtime != 0.0 and cached_mtime != 0.0 and current_mtime > cached_mtime
+            current_mtime != 0.0
+            and cached_mtime != 0.0
+            and abs(current_mtime - cached_mtime) > 0.01
         )
 
-        if cached is None or inode_changed or mtime_changed:
+        if cached is None or inode_changed or mtime_changed or mtime_appeared:
             _fix_blob_seq_ids(palace_path)
             cached = chromadb.PersistentClient(path=palace_path)
             self._clients[palace_path] = cached
-            self._freshness[palace_path] = (current_inode, current_mtime)
+            # Re-stat after the client constructor runs: chromadb creates
+            # chroma.sqlite3 lazily, so the stat captured before the call
+            # may still be (0, 0.0) on first open.
+            self._freshness[palace_path] = self._db_stat(palace_path)
         return cached
 
     # ------------------------------------------------------------------

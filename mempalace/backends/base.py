@@ -133,14 +133,21 @@ class QueryResult(_DictCompatMixin):
     embeddings: Optional[list[list[list[float]]]] = None
 
     @classmethod
-    def empty(cls, num_queries: int = 1) -> "QueryResult":
-        """Construct an all-empty result preserving outer dimension."""
+    def empty(cls, num_queries: int = 1, embeddings_requested: bool = False) -> "QueryResult":
+        """Construct an all-empty result preserving outer dimension.
+
+        When ``embeddings_requested`` is True, ``embeddings`` preserves the outer
+        query dimension with empty hit lists (matching the spec's rule that fields
+        requested via ``include=`` carry the outer shape even when empty). When
+        False, ``embeddings`` stays ``None`` to signal the field was not requested.
+        """
+        empty_outer = [[] for _ in range(num_queries)]
         return cls(
             ids=[[] for _ in range(num_queries)],
             documents=[[] for _ in range(num_queries)],
             metadatas=[[] for _ in range(num_queries)],
             distances=[[] for _ in range(num_queries)],
-            embeddings=None,
+            embeddings=empty_outer if embeddings_requested else None,
         )
 
 
@@ -249,6 +256,15 @@ class BaseCollection(ABC):
         """
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
+
+        n = len(ids)
+        for label, value in (
+            ("documents", documents),
+            ("metadatas", metadatas),
+            ("embeddings", embeddings),
+        ):
+            if value is not None and len(value) != n:
+                raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
 
         existing = self.get(ids=ids, include=["documents", "metadatas"])
         by_id = {
